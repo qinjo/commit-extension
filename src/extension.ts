@@ -3,17 +3,31 @@
 import * as vscode from "vscode";
 import { GitExtension, Repository } from "./git";
 import { execSync } from "child_process";
+import { cwd } from "process";
+
+// 定义提交对象的类型
+interface Commit {
+  Commit: string;
+  Author: string;
+  Date: string;
+  Message: string;
+}
 
 function splitCommits(inputString: string) {
-  // 正则表达式匹配以“----    ”开始，以“----”结束的字符串
-  const regex = /----\s{4}(.*?)----/g;
-  const matches = [];
-  let match;
-  // 使用正则表达式的 exec 方法来循环查找所有匹配项
-  while ((match = regex.exec(inputString)) !== null) {
-    matches.push(match[1].trim().replace(/--\s{2}/g, ""));
-  }
-  return matches;
+  // 分割输出，按 "Commit: " 作为分隔符
+  let commitEntries = inputString.split("Commit: ").slice(1);
+
+  // 解析每条记录为对象
+  const commits: Commit[] = commitEntries.map((entry) => {
+    const lines = entry.trim().split("\n");
+    return {
+      Commit: lines[0].replace("Commit: ", "").trim(),
+      Author: lines[1].replace("Author: ", "").trim(),
+      Date: lines[2].replace("Date: ", "").trim(),
+      Message: lines.slice(3).join("\n").replace("Message: ", "").trim(), // 处理多行消息
+    };
+  });
+  return commits;
 }
 
 function getGitExtension() {
@@ -23,6 +37,7 @@ function getGitExtension() {
 }
 
 function getRecentCommits() {
+  // 检测是否有路径
   const rootPath = vscode.workspace.rootPath;
   if (!rootPath) {
     vscode.window.showErrorMessage(
@@ -31,21 +46,23 @@ function getRecentCommits() {
     return [];
   }
   // 打印当前工作目录
-  // console.log("当前工作目录:", cwd());
+  console.log("当前工作目录:", cwd());
   process.chdir(rootPath);
-  // 再次打印工作目录确认更改
-  // console.log("更改后的工作目录:", cwd());
 
   try {
-    const output = execSync("git log -20", { encoding: "utf-8" });
-    return splitCommits(output.replace(/(\r\n|\n|\r)/gm, "--"));
+    // 执行 git log 命令并获取输出
+    const logOutput = execSync(
+      'git log -20 --pretty=format:"Commit: %H%nAuthor: %an <%ae>%nDate: %ad%nMessage: %B%n" --date=short',
+      { encoding: "utf-8" }
+    );
+    // 解析每条记录为对象
+    const commits = splitCommits(logOutput);
+    return commits;
   } catch (error) {
     console.error(`执行出错: ${error}`);
     return [];
   }
 }
-
-
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerCommand(
@@ -56,7 +73,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage("Unable to load Git Extension");
         return;
       }
-      // 拿到最近10个commit
+      // 拿到最近20个commit
       const commits = getRecentCommits();
       if (!commits || commits.length === 0) {
         vscode.window.showInformationMessage(
@@ -66,7 +83,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
       vscode.window
         .showQuickPick(
-          commits.map((commit) => commit),
+          commits.map((commit) => commit.Message.replace("Message: ", "")),
           {
             placeHolder: "Select a commit",
           }
@@ -74,11 +91,12 @@ export function activate(context: vscode.ExtensionContext) {
         .then(function (userSelection) {
           if (userSelection) {
             const selectedCommit = commits.find(
-              (commit) => commit === userSelection
+              (commit) => commit.Message === userSelection
             );
             if (selectedCommit) {
-              const str = selectedCommit.replace(/\s{2}/g, "\n");
-              vscode.env.clipboard.writeText(str);
+              const msg = selectedCommit.Message;
+              const cmt = selectedCommit.Commit.replace("Commit: ", "");
+              vscode.env.clipboard.writeText(cmt);
               vscode.window.showInformationMessage(
                 "Commit message copied to clipboard."
               );
@@ -88,11 +106,11 @@ export function activate(context: vscode.ExtensionContext) {
                   (repository) => repository.rootUri.path === uriPath
                 );
                 if (selectedRepository) {
-                  selectedRepository.inputBox.value = str;
+                  selectedRepository.inputBox.value = msg;
                 }
               } else {
                 for (let repo of git.repositories) {
-                  repo.inputBox.value = str;
+                  repo.inputBox.value = msg;
                 }
               }
             }
@@ -103,9 +121,6 @@ export function activate(context: vscode.ExtensionContext) {
   );
   context.subscriptions.push(disposable);
 }
-
-// 在扩展激活时注册命令
-// vscode.commands.registerCommand('extension.showRecentCommits', showCommitsQuickPick);
 
 // This method is called when your extension is deactivated
 export function deactivate() {}
